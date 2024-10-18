@@ -2,11 +2,11 @@
 
 ###############################################################################
 # Title: auto_app_updater.py
-# Description: Updates a Custom App in Kandji with latest version
-#             from a manifest JSON
-# Source: https://github.com/matdotcx/
-# Edition: Thu 17 Oct 2024 10:32:11 BST
-###############################################################################
+# Description: Updates a Custom App in Kandji with the latest version
+#             from a manifest JSON. Ideal for your CI runner actions!
+# Source: https://github.com/matdotcx/endpoint-ploughshare/
+# Edition: Fri 18 Oct 2024 12:16:09 BST
+# ###############################################################################
 
 # Setup Instructions:
 # 1. Ensure you have Python 3.6 or later installed.
@@ -25,16 +25,22 @@
 #    MANIFEST_URL=https://your.manifest.url/manifest.json
 #
 #    # Optional Configuration
-#    # APP_INSTALL_TYPE=zip
-#    # APP_INSTALL_ENFORCEMENT=continuously_enforce
-#    # APP_SHOW_IN_SELF_SERVICE=true
-#    # APP_SELF_SERVICE_CATEGORY_ID=your_category_id
+#    APP_INSTALL_TYPE=zip
+#    APP_INSTALL_ENFORCEMENT=continuously_enforce
+#    APP_SHOW_IN_SELF_SERVICE=true
+#    APP_SELF_SERVICE_CATEGORY_ID=your_category_id
 #
 # Usage:
-# python auto_app_updater.py [--dry-run]
+# python auto_app_updater.py [--dry-run] [--debug]
 #
 # Options:
 #   --dry-run    Validate and preview without making changes
+#   --debug      Show debug output in console (default with --dry-run)
+#
+# Examples:
+#   python auto_app_updater.py
+#   python auto_app_updater.py --debug
+#   python auto_app_updater.py --dry-run
 ###############################################################################
 
 import sys
@@ -102,15 +108,28 @@ USER_AGENT = f"Kandji-App-Updater/1.0 ({APP_NAME})"
 
 # Set up logging
 log_filename = f"kandji_{APP_NAME.replace('.', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_filename),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+
+# Global logger
+logger = None
+
+def setup_logging(debug_mode):
+    global logger
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+
+    # File handler (always debug level)
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+    # Console handler (info level by default, debug level if debug_mode is True)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG if debug_mode else logging.INFO)
+    console_formatter = logging.Formatter('%(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
 
 class KandjiAPIError(Exception):
     """Custom exception for Kandji API errors"""
@@ -240,6 +259,12 @@ def upload_to_s3(file_path):
             response.raise_for_status()
 
         logger.info("S3 upload complete.")
+
+        # Add a 30-second wait after the S3 upload
+        logger.info("Waiting 30 seconds for upload processing...")
+        time.sleep(30)
+        logger.info("Wait complete.")
+
         return upload_details['file_key']
     except Exception as e:
         logger.error(f"Failed to upload to S3: {str(e)}")
@@ -275,8 +300,10 @@ def update_app(file_key, current_settings, version):
     logger.debug(f"Update payload: {json.dumps(payload, indent=2)}")
     return api_request('PATCH', f"/v1/library/custom-apps/{APP_ID}", session, json=payload)
 
-def main(dry_run=False):
+def main(dry_run=False, debug=False):
     """Main execution function"""
+    setup_logging(debug)
+
     logger.info(f"Starting {APP_NAME} update process...")
     zip_path = None
 
@@ -290,14 +317,18 @@ def main(dry_run=False):
         current_app_details = get_app_details()
         logger.debug(f"Current app details: {json.dumps(current_app_details, indent=2)}")
 
+        # Prepare summary information
+        summary = f"{'DRY RUN: Would download' if dry_run else 'Downloaded'} {APP_NAME} version {version} from: {zip_url}"
+        summary += f"\n{'DRY RUN: Would upload' if dry_run else 'Uploaded'} to S3 and update{'d' if not dry_run else ''} app with current settings"
+        summary += f"\nApp settings {'that would be' if dry_run else 'that were'} maintained:"
+        summary += f"\n         - Install type: {current_app_details.get('install_type', APP_INSTALL_TYPE)}"
+        summary += f"\n         - Install enforcement: {current_app_details.get('install_enforcement', APP_INSTALL_ENFORCEMENT)}"
+        summary += f"\n         - Show in Self Service: {current_app_details.get('show_in_self_service', APP_SHOW_IN_SELF_SERVICE)}"
+
         # Handle dry run
         if dry_run:
-            logger.info(f"DRY RUN: Would download {APP_NAME} version {version} from: {zip_url}")
-            logger.info(f"DRY RUN: Would upload to S3 and update app with current settings")
-            logger.info(f"DRY RUN: Current app settings that would be maintained:")
-            logger.info(f"         - Install type: {current_app_details.get('install_type', APP_INSTALL_TYPE)}")
-            logger.info(f"         - Install enforcement: {current_app_details.get('install_enforcement', APP_INSTALL_ENFORCEMENT)}")
-            logger.info(f"         - Show in Self Service: {current_app_details.get('show_in_self_service', APP_SHOW_IN_SELF_SERVICE)}")
+            logger.info("Dry run summary:")
+            logger.info(summary)
             return True
 
         # Download and update
@@ -307,6 +338,11 @@ def main(dry_run=False):
 
         logger.info(f"Update to version {version} successful!")
         logger.debug(f"Update result: {json.dumps(update_result, indent=2)}")
+
+        # Log the summary for actual runs
+        logger.info("Update Summary:")
+        logger.info(summary)
+
         return True
 
     except Exception as e:
@@ -324,7 +360,12 @@ def main(dry_run=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"Update {APP_NAME} in Kandji")
     parser.add_argument('--dry-run', action='store_true', help='Validate and preview without making changes')
+    parser.add_argument('--debug', action='store_true', help='Show debug output in console')
     args = parser.parse_args()
 
-    success = main(dry_run=args.dry_run)
+    # If dry-run is set, automatically set debug to True as well
+    if args.dry_run:
+        args.debug = True
+
+    success = main(dry_run=args.dry_run, debug=args.debug)
     sys.exit(0 if success else 1)
